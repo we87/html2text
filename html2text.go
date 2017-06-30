@@ -2,6 +2,7 @@ package html2text
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -79,6 +80,7 @@ type textifyTraverseContext struct {
 	justClosedDiv   bool
 	blockquoteLevel int
 	lineLength      int
+	indentLevel     int
 }
 
 // tableTraverseContext holds table ASCII-form related context.
@@ -168,14 +170,44 @@ func (ctx *textifyTraverseContext) handleElement(node *html.Node) error {
 		return err
 
 	case atom.Li:
-		if err := ctx.emit("* "); err != nil {
+		subCtx := textifyTraverseContext{
+			indentLevel: ctx.indentLevel + 1,
+		}
+		if err := subCtx.traverseChildren(node); err != nil {
 			return err
 		}
-
-		if err := ctx.traverseChildren(node); err != nil {
-			return err
+		str := subCtx.buf.String()
+		var n int
+		for p, c := range str {
+			if c != '\n' {
+				n = p
+				break
+			}
 		}
+		str = str[n:]
+		indent := strings.Repeat("  ", ctx.indentLevel+1)
+		var lines []string
+		for i, line := range strings.Split(str, "\n") {
+			if i == 0 {
+				lines = append(lines, line)
+				continue
+			}
+			if len(line) == 0 {
+				lines = append(lines, "")
+				continue
+			}
+			lines = append(lines, indent+line)
+		}
+		str = strings.Join(lines, "\n")
 
+		if len(str) > 0 {
+			if err := ctx.emit("* "); err != nil {
+				return err
+			}
+			if err := ctx.emit(str); err != nil {
+				return err
+			}
+		}
 		return ctx.emit("\n")
 
 	case atom.B, atom.Strong:
@@ -185,7 +217,10 @@ func (ctx *textifyTraverseContext) handleElement(node *html.Node) error {
 			return err
 		}
 		str := subCtx.buf.String()
-		return ctx.emit("*" + str + "*")
+		if str == "" {
+			return nil
+		}
+		return ctx.emit(str)
 
 	case atom.A:
 		// If image is the only child, take its alt text as the link text.
@@ -209,6 +244,9 @@ func (ctx *textifyTraverseContext) handleElement(node *html.Node) error {
 
 		return ctx.emit(hrefLink)
 
+	case atom.Img:
+		return ctx.emit(fmt.Sprintf("[%s]", getAttrVal(node, "src")))
+
 	case atom.P, atom.Ul:
 		return ctx.paragraphHandler(node)
 
@@ -231,9 +269,6 @@ func (ctx *textifyTraverseContext) handleElement(node *html.Node) error {
 
 // paragraphHandler renders node children surrounded by double newlines.
 func (ctx *textifyTraverseContext) paragraphHandler(node *html.Node) error {
-	if err := ctx.emit("\n\n"); err != nil {
-		return err
-	}
 	if err := ctx.traverseChildren(node); err != nil {
 		return err
 	}
